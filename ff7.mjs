@@ -1,6 +1,15 @@
-import { get, toAscii, isLengthUnicode, toUnicode, convertSizeOfUnicode, toInt, littleEndian } from './util.mjs';
+import { get, toAscii, isLengthUnicode, toUnicode, convertSizeOfUnicode, toInt, littleEndian, io } from './util.mjs';
 
 const OFFSET = 17;
+
+export function _translationOriginalToHuman(str) {
+  let result = str;
+  // 1. Remove translation end /u0000
+  result = result.replace(/\u0000$/, '');
+  // 2. Replace new line (FF7 uses CRLF)
+  result = result.replace(/\r\n/gm, '<crlf>');
+  return result;
+}
 
 export async function _readLength(file, fileOffset) {
   const result = {
@@ -25,14 +34,16 @@ export async function _readTranslation(file, fileOffset) {
   let translation = '';
 
   let output = await _readLength(file, fileOffset);
+  const isUnicode = output.isUnicode;
+
   output = await get(file, output.length, output.next);
 
-  if (output.isUnicode) translation = toUnicode(output.buffer.toString('hex'));
+  if (isUnicode) translation = toUnicode(output.buffer.toString('hex'));
   else translation = toAscii(output.buffer.toString('hex'));
 
   return {
     ...output,
-    translation,
+    translation: _translationOriginalToHuman(translation),
   }
 }
 
@@ -112,5 +123,92 @@ export async function parse(file, fileOffset = OFFSET) {
     footer = await get(file, size - next, next);
   }
   
-  return content;
+  return {
+    header,
+    footer,
+    content
+  };
 }
+
+export async function exportCsv(filename, parsed) {
+  let maxVariants = 0;
+  parsed.content.forEach((elm) => {
+    if (elm.variants.length > maxVariants) maxVariants = elm.variants.length;
+  });
+
+  const csvHeader = [
+    { id: 'key', title: 'key' },
+    { id: 'translation', title: 'original' },
+    { id: '<export>', title: 'translation1' },
+    { id: '<export>', title: 'translation2' },
+    { id: '<export>', title: 'translation3' },
+    { id: '<export>', title: 'translation4' },
+    { id: '<export>', title: 'translation5' },
+  ];
+  new Array(maxVariants).fill('').forEach((_, i) => {
+    csvHeader.push({ id: `variant${i + 1}_type`, title: `variant${i + 1}_type` });
+    csvHeader.push({ id: `variant${i + 1}_translation`, title: `variant${i + 1}_original` });
+    csvHeader.push({ id: '<export>', title: `variant${i + 1}_translation` });
+  });
+
+  const csvWriter = io.csv.out({
+    path: `${filename}-output.csv`,
+    header: csvHeader,
+  });
+
+  const prepareForCsv = [];
+
+  prepareForCsv.push({
+    key: 'UT--HEADER',
+    translation: parsed.header.buffer.toString('hex'),
+  });
+  prepareForCsv.push({
+    key: 'UT--FOOTER',
+    translation: parsed.footer.buffer.toString('hex'),
+  });
+
+  parsed.content.forEach((elm) => {
+    const contentConvert = {
+      key: elm.key,
+      translation: elm.translation,
+    };
+    new Array(maxVariants).fill('').forEach((_, i) => {
+      contentConvert[`variant${i + 1}_type`] = (elm.variants[i]?.type) ? `v-${elm.variants[i]?.type}` : '';
+      contentConvert[`variant${i + 1}_translation`] = elm.variants[i]?.translation || '';
+    })
+    prepareForCsv.push(contentConvert);
+  });
+
+  await csvWriter.writeRecords(prepareForCsv);
+}
+
+export async function exportVariantsAnalysis(filename, parsed) {
+  const variantMap = {};
+  const keyMap = {};
+  const resultArr = [];
+  parsed.content.forEach((elm) => {
+    elm.variants.forEach((v) => {
+      if (!(`v-${v.type}` in variantMap)) variantMap[`v-${v.type}`] = '';
+      if (!(elm.key in keyMap)) {
+        resultArr.push({ key: elm.key, originalRowTranslation: elm.translation });
+        keyMap[elm.key] = resultArr.length - 1;
+      }
+      resultArr[keyMap[elm.key]][`v-${v.type}`] = v.translation.replace(/\u0000/gm, '<nul>');
+    });
+  });
+
+  const csvHeader = [
+    { id: 'key', title: 'key' },
+    { id: 'originalRowTranslation', title: 'original' },
+  ];
+  Object.keys(variantMap).forEach((vM) => {
+    csvHeader.push({ id: vM, title: vM });
+  });
+
+  const csvWriter = io.csv.out({
+    path: `${filename}-variants-analysis.csv`,
+    header: csvHeader,
+  });
+
+  await csvWriter.writeRecords(resultArr);
+} 
