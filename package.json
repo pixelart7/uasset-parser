@@ -1,0 +1,10 @@
+{
+  "name": "uasset-parser",
+  "version": "1.0.0",
+  "main": "index.js",
+  "author": "Chaiyapat Tantiworachot <chaiyapat@pix7.me>",
+  "license": "MIT",
+  "dependencies": {
+    "csv-writer": "^1.6.0"
+  }
+}
