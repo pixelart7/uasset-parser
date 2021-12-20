@@ -6,6 +6,8 @@
 *.uexp
 *.uexp-output.csv
 
+test/
+
 ### Node ###
 # Logs
 logs
