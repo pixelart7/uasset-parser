@@ -2,27 +2,41 @@ import { get, toAscii, isLengthUnicode, toUnicode, convertSizeOfUnicode, toInt, 
 
 const OFFSET = 17;
 
-export async function _translation(file, fileOffset) {
-  let result = '';
+export async function _readLength(file, fileOffset) {
+  const result = {
+    length: 0,
+    isUnicode: false,
+  };
 
-  let output = await get(file, 4, fileOffset);
+  const output = await get(file, 4, fileOffset);
 
-  const isUnicode = isLengthUnicode(output.buffer);
-  if (isUnicode) {
-    output = await get(file, convertSizeOfUnicode(output.buffer), output.next);
-    result = toUnicode(output.buffer.toString('hex'));
-  } else {
-    output = await get(file, toInt(output.buffer, littleEndian), output.next);
-    result = toAscii(output.buffer.toString('hex'));
-  }
+  result.isUnicode = isLengthUnicode(output.buffer);
+
+  if (result.isUnicode) result.length = convertSizeOfUnicode(output.buffer);
+  else result.length = toInt(output.buffer, littleEndian);
 
   return {
     ...output,
-    result,
+    ...result,
   }
 }
 
-export async function _variant(file, fileOffset) {
+export async function _readTranslation(file, fileOffset) {
+  let translation = '';
+
+  let output = await _readLength(file, fileOffset);
+  output = await get(file, output.length, output.next);
+
+  if (output.isUnicode) translation = toUnicode(output.buffer.toString('hex'));
+  else translation = toAscii(output.buffer.toString('hex'));
+
+  return {
+    ...output,
+    translation,
+  }
+}
+
+export async function _readVariant(file, fileOffset) {
   const result = {
     type: '',
     translation: '',
@@ -33,8 +47,8 @@ export async function _variant(file, fileOffset) {
   output = await get(file, 8, fileOffset);
   result.type = output.buffer.toString('hex');
 
-  output = await _translation(file, output.next);
-  result.translation = output.result;
+  output = await _readTranslation(file, output.next);
+  result.translation = output.translation;
 
   return {
     ...output,
@@ -42,7 +56,7 @@ export async function _variant(file, fileOffset) {
   };
 }
 
-export async function _translationKey(file, fileOffset) {
+export async function _readTranslationRow(file, fileOffset) {
   const result = {
     key: '',
     translation: '',
@@ -52,20 +66,20 @@ export async function _translationKey(file, fileOffset) {
   let output;
 
   // key length & key value
-  output = await get(file, 4, fileOffset);
-  output = await get(file, toInt(output.buffer, littleEndian), output.next);
+  output = await _readLength(file, fileOffset);
+  output = await get(file, output.length, output.next);
   result.key = toAscii(output.buffer.toString('hex'));
 
   // translation length & translation value
-  output = await _translation(file, output.next);
-  result.translation = output.result;
+  output = await _readTranslation(file, output.next);
+  result.translation = output.translation;
 
   // variant size
-  output = await get(file, 4, output.next);
-  let variants = toInt(output.buffer, littleEndian);
+  output = await _readLength(file, output.next);
+  let variants = output.length;
 
   for (let i = 0; i < variants; i++) {
-    output = await _variant(file, output.next);
+    output = await _readVariant(file, output.next);
     result.variants.push(output);
   }
 
@@ -88,7 +102,7 @@ export async function parse(file, fileOffset = OFFSET) {
 
   try {
     while (next < size) {
-      const res = await _translationKey(file, next);
+      const res = await _readTranslationRow(file, next);
       content.push(res);
       next = res.next;
     }
