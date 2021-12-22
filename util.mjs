@@ -105,6 +105,8 @@ export async function validateOutput(f1, f2) {
       const res2 = await get(f2, 8, next);
       if (res1.buffer.toString('hex') !== res2.buffer.toString('hex')) {
         console.warn(`Byte Check: invalid byte around position: ${next} (halted byte check)`);
+        console.error('Something is wrong in the parser/converter algorithm');
+        console.error('**.csv is invalid and shouldn\'t be used**');
         throw new Error('expected');
       }
       next = res1.next;
