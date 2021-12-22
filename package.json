@@ -5,6 +5,7 @@
   "author": "Chaiyapat Tantiworachot <chaiyapat@pix7.me>",
   "license": "MIT",
   "dependencies": {
+    "@fast-csv/parse": "^4.3.6",
     "commander": "^8.3.0",
     "csv-writer": "^1.6.0"
   }

@@ -1,104 +1,8 @@
-import { get, toAscii, isLengthUnicode, toUnicode, convertSizeOfUnicode, toInt, littleEndian, io } from './util.mjs';
+import { chooseTranslation, get, io, isASCII, popHeaderAndFooter, toBuffer } from './util.mjs';
+import { _translationOriginalToHuman, _translationHumanToOriginal, _readLength, _readTranslation, _readVariant, _readTranslationRow } from './ff7.util.mjs';
+import { HEADER_KEY, FOOTER_KEY, APPEND_OUTPUT_FILENAME, APPEND_OUTPUT_VARIANT_FILENAME, VARIANT_PREPEND } from './constants.mjs';
 
 const OFFSET = 17;
-
-export function _translationOriginalToHuman(str) {
-  let result = str;
-  // 1. Remove translation end /u0000
-  result = result.replace(/\u0000$/, '');
-  // 2. Replace new line (FF7 uses CRLF)
-  result = result.replace(/\r\n/gm, '<crlf>');
-  return result;
-}
-
-export async function _readLength(file, fileOffset) {
-  const result = {
-    length: 0,
-    isUnicode: false,
-  };
-
-  const output = await get(file, 4, fileOffset);
-
-  result.isUnicode = isLengthUnicode(output.buffer);
-
-  if (result.isUnicode) result.length = convertSizeOfUnicode(output.buffer);
-  else result.length = toInt(output.buffer, littleEndian);
-
-  return {
-    ...output,
-    ...result,
-  }
-}
-
-export async function _readTranslation(file, fileOffset) {
-  let translation = '';
-
-  let output = await _readLength(file, fileOffset);
-  const isUnicode = output.isUnicode;
-
-  output = await get(file, output.length, output.next);
-
-  if (isUnicode) translation = toUnicode(output.buffer.toString('hex'));
-  else translation = toAscii(output.buffer.toString('hex'));
-
-  return {
-    ...output,
-    translation: _translationOriginalToHuman(translation),
-  }
-}
-
-export async function _readVariant(file, fileOffset) {
-  const result = {
-    type: '',
-    translation: '',
-  }
-
-  let output;
-
-  output = await get(file, 8, fileOffset);
-  result.type = output.buffer.toString('hex');
-
-  output = await _readTranslation(file, output.next);
-  result.translation = output.translation;
-
-  return {
-    ...output,
-    ...result,
-  };
-}
-
-export async function _readTranslationRow(file, fileOffset) {
-  const result = {
-    key: '',
-    translation: '',
-    variants: [], // { translation, variantType },
-  };
-
-  let output;
-
-  // key length & key value
-  output = await _readLength(file, fileOffset);
-  output = await get(file, output.length, output.next);
-  result.key = toAscii(output.buffer.toString('hex'));
-
-  // translation length & translation value
-  output = await _readTranslation(file, output.next);
-  result.translation = output.translation;
-
-  // variant size
-  output = await _readLength(file, output.next);
-  let variants = output.length;
-
-  for (let i = 0; i < variants; i++) {
-    output = await _readVariant(file, output.next);
-    result.variants.push(output);
-  }
-
-  return {
-    ...output,
-    ...result,
-  };
-}
 
 export async function parse(file, fileOffset = OFFSET) {
   const stat = await file.stat();
@@ -130,6 +34,87 @@ export async function parse(file, fileOffset = OFFSET) {
   };
 }
 
+export async function convert(csv, translationApplication = '1') {
+  const csvString = (await csv.readFile()).toString();
+  const csvArr = await io.csv.in(csvString);
+
+  const separatedSet = popHeaderAndFooter(csvArr);
+
+  // This part is so chaotic evil
+  const variantNums = [...new Set(Object.keys(separatedSet.arr[0]).filter((v) => v.includes('variant')).map((v) => v.replace('variant', '').replace(/_.*$/, '')))].length;
+  // const variantSubValueNums = Object.keys(separatedSet.arr[0]).filter((v) => v.includes('variant')).length / variantNums;
+  const variantSubValueKeys = [...new Set(Object.keys(separatedSet.arr[0]).filter((v) => v.includes('variant')).map((v) => v.replace(/\d+/, 'x').replace('variantx_', '')))];
+
+  // put variants in arr
+  separatedSet.arr = separatedSet.arr.map((a) => {
+    const variants = new Array(variantNums).fill('');
+    const mappedVariants = variants.map((_, i) => {
+      const res = {};
+      variantSubValueKeys.forEach((vsk) => {
+        res[vsk] = a[`variant${i+1}_${vsk}`];
+      });
+      return res;
+    });
+    return {
+      ...a,
+      variants: mappedVariants.filter((v) => v.type !== '').map((v) => ({ ...v, type: v.type.replace(VARIANT_PREPEND, '') })), // return only non-empty type
+    }
+  });
+
+  let result = '';
+  result = `${result}${separatedSet.header.original}`;
+  separatedSet.arr.forEach((translation) => {
+    let thisTranslationResult = '';
+
+    // key
+    const key = _translationHumanToOriginal(translation.key);
+    const keyLength = toBuffer(key.length, 4);
+    thisTranslationResult = `${thisTranslationResult}${keyLength.toString('hex')}${Buffer.from(key).toString('hex')}`;
+
+    // translation
+    const translationCandidate = chooseTranslation(translation, translationApplication);
+    const translationValue = _translationHumanToOriginal(translationCandidate);
+    let translationLength;
+    if (isASCII(translationCandidate)) {
+      translationLength = toBuffer(translationValue.length, 4);
+      thisTranslationResult = `${thisTranslationResult}${translationLength.toString('hex')}${Buffer.from(translationValue).toString('hex')}`;
+    } else {
+      translationLength = toBuffer((0xFFFFFFFF) - (_translationHumanToOriginal(translationCandidate, true).length / 2) + 1, 4);
+      thisTranslationResult = `${thisTranslationResult}${translationLength.toString('hex')}${_translationHumanToOriginal(translationCandidate, true).toString('hex')}`;
+    }
+
+    // variant nums
+    const variantsLength = toBuffer(translation.variants.length, 4);
+    thisTranslationResult = `${thisTranslationResult}${variantsLength.toString('hex')}`;
+    
+    translation.variants.forEach((v) => {
+      let thisVariantResult = '';
+
+      // type
+      thisVariantResult = `${thisVariantResult}${v.type}`;
+
+      // value
+      const variantTranslationCandidate = (v.translation !== '') ? v.translation : v.original;
+      const variantTranslation = _translationHumanToOriginal(variantTranslationCandidate);
+      let variantTranslationLength;
+      if (isASCII(variantTranslationCandidate)) {
+        variantTranslationLength = toBuffer(variantTranslation.length, 4);
+        thisVariantResult = `${thisVariantResult}${variantTranslationLength.toString('hex')}${Buffer.from(variantTranslation).toString('hex')}`;
+      } else {
+        variantTranslationLength = toBuffer((0xFFFFFFFF) - (_translationHumanToOriginal(variantTranslationCandidate, true).length / 2) + 1, 4);
+        thisVariantResult = `${thisVariantResult}${variantTranslationLength.toString('hex')}${_translationHumanToOriginal(variantTranslationCandidate, true).toString('hex')}`;
+      }
+
+      thisTranslationResult = `${thisTranslationResult}${thisVariantResult}`;
+    });
+
+    result = `${result}${thisTranslationResult}`;
+  });
+  result = `${result}${separatedSet.footer.original}`;
+
+  return result;
+}
+
 export async function exportCsv(filename, parsed) {
   let maxVariants = 0;
   parsed.content.forEach((elm) => {
@@ -152,18 +137,18 @@ export async function exportCsv(filename, parsed) {
   });
 
   const csvWriter = io.csv.out({
-    path: `${filename}-output.csv`,
+    path: `${filename}${APPEND_OUTPUT_FILENAME}`,
     header: csvHeader,
   });
 
   const prepareForCsv = [];
 
   prepareForCsv.push({
-    key: 'UT--HEADER',
+    key: HEADER_KEY,
     translation: parsed.header.buffer.toString('hex'),
   });
   prepareForCsv.push({
-    key: 'UT--FOOTER',
+    key: FOOTER_KEY,
     translation: parsed.footer.buffer.toString('hex'),
   });
 
@@ -173,7 +158,7 @@ export async function exportCsv(filename, parsed) {
       translation: elm.translation,
     };
     new Array(maxVariants).fill('').forEach((_, i) => {
-      contentConvert[`variant${i + 1}_type`] = (elm.variants[i]?.type) ? `v-${elm.variants[i]?.type}` : '';
+      contentConvert[`variant${i + 1}_type`] = (elm.variants[i]?.type) ? `${VARIANT_PREPEND}${elm.variants[i]?.type}` : '';
       contentConvert[`variant${i + 1}_translation`] = elm.variants[i]?.translation || '';
     })
     prepareForCsv.push(contentConvert);
@@ -188,12 +173,12 @@ export async function exportVariantsAnalysis(filename, parsed) {
   const resultArr = [];
   parsed.content.forEach((elm) => {
     elm.variants.forEach((v) => {
-      if (!(`v-${v.type}` in variantMap)) variantMap[`v-${v.type}`] = '';
+      if (!(`${VARIANT_PREPEND}${v.type}` in variantMap)) variantMap[`${VARIANT_PREPEND}${v.type}`] = '';
       if (!(elm.key in keyMap)) {
         resultArr.push({ key: elm.key, originalRowTranslation: elm.translation });
         keyMap[elm.key] = resultArr.length - 1;
       }
-      resultArr[keyMap[elm.key]][`v-${v.type}`] = v.translation.replace(/\u0000/gm, '<nul>');
+      resultArr[keyMap[elm.key]][`${VARIANT_PREPEND}${v.type}`] = v.translation.replace(/\u0000/gm, '<nul>');
     });
   });
 
@@ -206,7 +191,7 @@ export async function exportVariantsAnalysis(filename, parsed) {
   });
 
   const csvWriter = io.csv.out({
-    path: `${filename}-variants-analysis.csv`,
+    path: `${filename}${APPEND_OUTPUT_VARIANT_FILENAME}`,
     header: csvHeader,
   });
 
