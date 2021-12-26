@@ -1,6 +1,6 @@
 import { chooseTranslation, get, io, isASCII, popHeaderAndFooter, toBuffer } from './util.mjs';
 import { _translationOriginalToHuman, _translationHumanToOriginal, _readLength, _readTranslation, _readVariant, _readTranslationRow } from './ff7.util.mjs';
-import { HEADER_KEY, FOOTER_KEY, APPEND_OUTPUT_FILENAME, APPEND_OUTPUT_VARIANT_FILENAME, VARIANT_PREPEND } from './constants.mjs';
+import { HEADER_KEY, FOOTER_KEY, APPEND_OUTPUT_FILENAME, APPEND_OUTPUT_VARIANT_FILENAME, VARIANT_PREPEND, RAW_HEX_PREPEND } from './constants.mjs';
 
 const OFFSET = 17;
 
@@ -62,7 +62,7 @@ export async function convert(csv, translationApplication = '1') {
   });
 
   let result = '';
-  result = `${result}${separatedSet.header.original}`;
+  result = `${result}${separatedSet.header.original.replace(RAW_HEX_PREPEND, '')}`;
   separatedSet.arr.forEach((translation) => {
     let thisTranslationResult = '';
 
@@ -110,7 +110,7 @@ export async function convert(csv, translationApplication = '1') {
 
     result = `${result}${thisTranslationResult}`;
   });
-  result = `${result}${separatedSet.footer.original}`;
+  result = `${result}${separatedSet.footer.original.replace(RAW_HEX_PREPEND, '')}`;
 
   return result;
 }
@@ -145,11 +145,11 @@ export async function exportCsv(filename, parsed) {
 
   prepareForCsv.push({
     key: HEADER_KEY,
-    translation: parsed.header.buffer.toString('hex'),
+    translation: `${RAW_HEX_PREPEND}${parsed.header.buffer.toString('hex')}`,
   });
   prepareForCsv.push({
     key: FOOTER_KEY,
-    translation: parsed.footer.buffer.toString('hex'),
+    translation: `${RAW_HEX_PREPEND}${parsed.footer.buffer.toString('hex')}`,
   });
 
   parsed.content.forEach((elm) => {
